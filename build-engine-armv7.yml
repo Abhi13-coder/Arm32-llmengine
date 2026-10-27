@@ -1,0 +1,60 @@
+# Milestone 1: build the UNMODIFIED MediaPipe v0.10.21 LLM engine (the open C++
+# source) for 32-bit ARM, to prove the toolchain works before we patch anything.
+# Put this file at .github/workflows/build-engine-armv7.yml in your own repo,
+# then Actions tab -> "build-engine-armv7" -> Run workflow.
+# Later milestones: add *.patch files under patches/ in the same repo; they are
+# applied to the MediaPipe sources before building.
+name: build-engine-armv7
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - name: Check out MediaPipe v0.10.21
+        uses: actions/checkout@v4
+        with:
+          repository: google-ai-edge/mediapipe
+          ref: v0.10.21
+      - name: Check out this repo (patches)
+        uses: actions/checkout@v4
+        with:
+          path: ours
+      - name: Install Android NDK r26d
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Apply our patches
+        run: |
+          shopt -s nullglob
+          for p in ours/patches/*.patch; do echo "applying $p"; git apply --verbose "$p"; done
+      - name: Wire the NDK into WORKSPACE
+        run: |
+          echo 'android_ndk_repository(name = "androidndk", api_level=21, path = "${{ steps.ndk.outputs.ndk-path }}")' >> WORKSPACE
+          echo 'bind(name = "android/crosstool", actual = "@androidndk//:toolchain")' >> WORKSPACE
+      - name: Install Bazelisk (reads .bazelversion = 6.5.0)
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazel
+          bazel --version
+      - name: Build libllm_inference_engine_jni.so for armeabi-v7a
+        run: |
+          bazel build -c opt --config=android_arm --jobs=3 --local_ram_resources=5500 \
+            --verbose_failures \
+            //mediapipe/tasks/java/com/google/mediapipe/tasks/genai:libllm_inference_engine_jni.so
+      - name: Collect output
+        run: |
+          mkdir -p dist
+          cp bazel-bin/mediapipe/tasks/java/com/google/mediapipe/tasks/genai/libllm_inference_engine_jni.so dist/
+          file dist/*.so || true
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libllm_inference_engine_jni-armeabi-v7a
+          path: dist/libllm_inference_engine_jni.so
